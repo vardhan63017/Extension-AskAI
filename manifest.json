@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "AI Web Assistant",
+  "version": "1.0.0",
+  "description": "Ask AI about selected text without leaving the webpage.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ]
+}
