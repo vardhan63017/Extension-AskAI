@@ -3,6 +3,8 @@
   "name": "AI Web Assistant",
   "version": "1.0.0",
   "description": "Ask AI about selected text without leaving the webpage.",
+  "permissions": ["activeTab"],
+  "host_permissions": ["http://localhost:3000/*", "http://127.0.0.1:3000/*"],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
