@@ -1,6 +1,8 @@
 let askButton = null;
 let extensionContainer = null;
 let activeRequestController = null;
+let activeTypingCancels = new Set();
+let typingGeneration = 0;
 
 const BACKEND_URL = "http://localhost:3000/api/explain";
 
@@ -24,9 +26,9 @@ function handleSelection(event) {
 
   const selection = window.getSelection();
   const selectedText =
-    selection && selection.rangeCount ? selection.toString().trim() : "";
+    selection && selection.rangeCount ? selection.toString() : "";
 
-  if (!selectedText || !selection || selection.rangeCount === 0) {
+  if (!selectedText.trim() || !selection || selection.rangeCount === 0) {
     return;
   }
 
@@ -55,10 +57,10 @@ function handleSelection(event) {
     const activeSelection = window.getSelection();
     const finalText =
       activeSelection && activeSelection.rangeCount
-        ? activeSelection.toString().trim()
+        ? activeSelection.toString()
         : selectedText;
 
-    if (!finalText) {
+    if (!finalText.trim()) {
       return;
     }
 
@@ -80,6 +82,8 @@ document.addEventListener("keyup", () => {
 });
 
 function createAIWindow(selectedText) {
+  cancelTypingAnimations();
+
   if (extensionContainer) {
     if (activeRequestController) {
       activeRequestController.abort();
@@ -94,6 +98,14 @@ function createAIWindow(selectedText) {
   extensionContainer.style.top = "100px";
   extensionContainer.style.right = "10px";
   extensionContainer.style.width = "min(390px, calc(100vw - 20px))";
+  extensionContainer.style.height = "min(520px, calc(100vh - 120px))";
+  extensionContainer.style.minWidth = "min(290px, calc(100vw - 20px))";
+  extensionContainer.style.minHeight = "min(300px, calc(100vh - 120px))";
+  extensionContainer.style.maxWidth = "calc(100vw - 20px)";
+  extensionContainer.style.maxHeight = "calc(100vh - 20px)";
+  extensionContainer.style.resize = "both";
+  extensionContainer.style.overflow = "hidden";
+  extensionContainer.style.borderRadius = "22px";
   extensionContainer.style.zIndex = "2147483647";
 
   const shadow = extensionContainer.attachShadow({ mode: "open" });
@@ -103,8 +115,11 @@ function createAIWindow(selectedText) {
     * { box-sizing: border-box; }
     .panel {
       width: 100%;
-      max-width: calc(100vw - 40px);
-      max-height: 75vh;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
       overflow: hidden;
       border-radius: 22px;
       background: linear-gradient(135deg, rgba(255,255,255,0.96), rgba(225,246,255,0.92));
@@ -122,6 +137,7 @@ function createAIWindow(selectedText) {
     }
     .header {
       display: flex;
+      flex: 0 0 auto;
       justify-content: space-between;
       align-items: center;
       padding: 16px 18px;
@@ -135,15 +151,91 @@ function createAIWindow(selectedText) {
       width: 30px; height: 30px; border: none; border-radius: 50%;
       background: rgba(255,255,255,0.7); font-size: 18px; cursor: pointer;
     }
-    .content { padding: 18px; }
-    .section { margin-bottom: 20px; }
-    .section-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+    .content {
+      flex: 1 1 auto;
+      min-height: 0;
+      padding: 14px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(20,122,163,0.35) transparent;
+    }
+    .section {
+      margin-bottom: 11px;
+      padding: 13px 14px;
+      border: 1px solid rgba(255,255,255,0.76);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.52);
+      box-shadow: 0 4px 14px rgba(29,98,125,0.06);
+    }
+    .section:last-child { margin-bottom: 0; }
+    .section-title {
+      margin-bottom: 8px;
+      color: #145d79;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
     .selected {
-      padding: 12px; border-radius: 12px; background: rgba(255,255,255,0.65);
-      font-weight: 600; word-break: break-word;
+      padding: 11px 12px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.66);
+      font-weight: 600;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
     .text { margin: 0; font-size: 14px; line-height: 1.6; color: #3d4d58; }
-    .answer { white-space: pre-wrap; }
+    .answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .answer-list {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding-left: 20px;
+    }
+    .answer-list li::marker { color: #147aa3; }
+    .typing-cursor {
+      display: inline-block;
+      margin-left: 1px;
+      color: #147aa3;
+      animation: cursorBlink 0.85s steps(2, start) infinite;
+    }
+    @keyframes cursorBlink { to { visibility: hidden; } }
+    .deep-dive-section { padding: 0; overflow: hidden; }
+    .deep-dive-toggle {
+      display: flex;
+      width: 100%;
+      min-height: 46px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border: 0;
+      background: transparent;
+      color: #145d79;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      text-align: left;
+      cursor: pointer;
+    }
+    .deep-dive-toggle:hover { background: rgba(255,255,255,0.32); }
+    .deep-dive-chevron { transition: transform 220ms ease; }
+    .deep-dive-section.is-open .deep-dive-chevron { transform: rotate(180deg); }
+    .deep-dive-body {
+      display: grid;
+      grid-template-rows: 0fr;
+      opacity: 0;
+      transition: grid-template-rows 260ms ease, opacity 200ms ease;
+    }
+    .deep-dive-section.is-open .deep-dive-body {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+    .deep-dive-inner { min-height: 0; overflow: hidden; }
+    .deep-dive-inner .answer-list { padding: 0 14px 14px 34px; }
+    @media (prefers-reduced-motion: reduce) {
+      .deep-dive-body, .deep-dive-chevron, .typing-cursor { transition: none; animation: none; }
+    }
     .loading {
       min-height: 220px; display: flex; flex-direction: column; align-items: center;
       justify-content: center; text-align: center;
@@ -196,7 +288,6 @@ function createAIWindow(selectedText) {
 
   document.body.appendChild(extensionContainer);
 
-  const answerElement = showAnswer(shadow, selectedText);
   const controller = new AbortController();
   activeRequestController = controller;
 
@@ -221,7 +312,7 @@ function createAIWindow(selectedText) {
             data.error || "The backend returned an empty response.",
           );
         }
-        answerElement.textContent = data.answer;
+        showAnswer(shadow, selectedText, data.answer);
         return;
       }
 
@@ -229,7 +320,8 @@ function createAIWindow(selectedText) {
         throw new Error("The backend did not provide a readable response.");
       }
 
-      await streamExplanation(response.body, answerElement);
+      const answerJson = await streamExplanation(response.body);
+      showAnswer(shadow, selectedText, JSON.parse(answerJson));
     })
     .catch((error) => {
       if (error.name === "AbortError") {
@@ -240,13 +332,17 @@ function createAIWindow(selectedText) {
       if (content) {
         content.innerHTML = `
           <div class="section">
-            <div class="section-title">❌ Error</div>
+            <div class="section-title">❌ Unable to generate explanation</div>
             <p class="text error-message"></p>
           </div>
         `;
         const errorNode = content.querySelector(".error-message");
         if (errorNode) {
-          errorNode.textContent = error.message;
+          errorNode.textContent = /select less text/i.test(error.message)
+            ? "Select less text and try again."
+            : /daily usage limit/i.test(error.message)
+              ? error.message
+              : "Please try again in a moment.";
         }
       }
     })
@@ -263,6 +359,7 @@ function createAIWindow(selectedText) {
         activeRequestController.abort();
         activeRequestController = null;
       }
+      cancelTypingAnimations();
 
       if (extensionContainer) {
         extensionContainer.remove();
@@ -274,57 +371,203 @@ function createAIWindow(selectedText) {
   makeDraggable(extensionContainer, panel.querySelector(".header"));
 }
 
-function showAnswer(shadow, selectedText) {
+function showAnswer(shadow, selectedText, answer) {
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)) {
+    throw new Error("The explanation response was invalid.");
+  }
+
   const content = shadow.querySelector(".content");
-  content.innerHTML = `
-    <div class="section">
-      <div class="section-title">📌 Selected</div>
-      <div class="selected"></div>
-    </div>
-    <div class="section">
-      <div class="section-title">📖 Explanation</div>
-      <p class="text answer" aria-live="polite"></p>
-    </div>
-  `;
+  content.replaceChildren();
 
-  const selectedNode = content.querySelector(".selected");
-  if (selectedNode) {
-    selectedNode.textContent = selectedText;
+  const selectedSection = document.createElement("section");
+  selectedSection.className = "section selected-section";
+  const selectedTitle = document.createElement("div");
+  selectedTitle.className = "section-title";
+  selectedTitle.textContent = "📌 Selected";
+  const selectedNode = document.createElement("div");
+  selectedNode.className = "selected";
+  selectedNode.textContent = selectedText;
+  selectedSection.append(selectedTitle, selectedNode);
+  content.appendChild(selectedSection);
+
+  const orderedSections = [
+    ["definition", "📖 Simple Definition", "text"],
+    ["examples", "💡 Examples", "list"],
+    ["realWorldApplications", "🌍 Real-World Applications", "list"],
+    ["advantages", "⭐ Advantages", "list"],
+    ["disadvantages", "⚠️ Disadvantages", "list"],
+    ["howItWorks", "⚙️ How It Works", "list"],
+  ];
+  const textTargets = [];
+
+  for (const [key, title, fieldType] of orderedSections) {
+    const value = answer[key];
+    const items =
+      fieldType === "list"
+        ? Array.isArray(value)
+          ? value.filter((item) => typeof item === "string" && item.trim())
+          : []
+        : typeof value === "string" && value.trim()
+          ? [value]
+          : [];
+    if (!items.length) {
+      continue;
+    }
+
+    const section = createAnswerSection(title, items);
+    content.appendChild(section.container);
+    textTargets.push(...section.textTargets);
   }
 
-  const answerElement = content.querySelector(".answer");
-  if (answerElement) {
-    answerElement.style.whiteSpace = "pre-wrap";
+  const deepDiveContent = Array.isArray(answer.deepDive)
+    ? answer.deepDive.filter((item) => typeof item === "string" && item.trim())
+    : [];
+  let deepDiveTypingQueued = false;
+  let deepDiveTypingStarted = false;
+  const generation = typingGeneration;
+
+  if (deepDiveContent.length) {
+    const deepDive = document.createElement("section");
+    deepDive.className = "section deep-dive-section";
+
+    const toggle = document.createElement("button");
+    toggle.className = "deep-dive-toggle";
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "🔍 Deep Dive";
+    const chevron = document.createElement("span");
+    chevron.className = "deep-dive-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.textContent = "⌄";
+    toggle.appendChild(chevron);
+
+    const body = document.createElement("div");
+    body.className = "deep-dive-body";
+    body.setAttribute("aria-hidden", "true");
+    const inner = document.createElement("div");
+    inner.className = "deep-dive-inner";
+    const deepDiveList = document.createElement("ul");
+    deepDiveList.className = "answer-list";
+    const deepDiveTargets = deepDiveContent.map((item) => {
+      const listItem = document.createElement("li");
+      listItem.className = "text answer";
+      listItem.setAttribute("aria-live", "off");
+      deepDiveList.appendChild(listItem);
+      return [listItem, item.trim()];
+    });
+    inner.appendChild(deepDiveList);
+    body.appendChild(inner);
+    deepDive.append(toggle, body);
+    content.appendChild(deepDive);
+
+    toggle.addEventListener("click", () => {
+      const expanded = toggle.getAttribute("aria-expanded") !== "true";
+      toggle.setAttribute("aria-expanded", String(expanded));
+      body.setAttribute("aria-hidden", String(!expanded));
+      deepDive.classList.toggle("is-open", expanded);
+      if (expanded && !deepDiveTypingStarted && !deepDiveTypingQueued) {
+        deepDiveTypingQueued = true;
+        visibleSectionsTyping.then(() => {
+          deepDiveTypingQueued = false;
+          if (
+            typingGeneration === generation &&
+            toggle.getAttribute("aria-expanded") === "true" &&
+            !deepDiveTypingStarted
+          ) {
+            deepDiveTypingStarted = true;
+            animateSections(deepDiveTargets, generation);
+          }
+        });
+      }
+    });
   }
-  return answerElement;
+
+  const visibleSectionsTyping = animateSections(textTargets, generation);
 }
 
-async function streamExplanation(body, answerElement) {
+function createAnswerSection(title, items) {
+  const container = document.createElement("section");
+  container.className = "section answer-section";
+  const heading = document.createElement("div");
+  heading.className = "section-title";
+  heading.textContent = title;
+  const list = document.createElement("ul");
+  list.className = "answer-list";
+  const textTargets = items.map((item) => {
+    const listItem = document.createElement("li");
+    listItem.className = "text answer";
+    listItem.setAttribute("aria-live", "off");
+    list.appendChild(listItem);
+    return [listItem, item.trim()];
+  });
+  container.append(heading, list);
+  return { container, textTargets };
+}
+
+async function animateSections(textTargets, generation) {
+  for (const [element, text] of textTargets) {
+    if (generation !== typingGeneration) {
+      return;
+    }
+    await typeCharacters(element, text, generation);
+  }
+}
+
+function typeCharacters(element, text, generation) {
+  return new Promise((resolve) => {
+    if (generation !== typingGeneration) {
+      resolve();
+      return;
+    }
+
+    const characters = Array.from(text);
+    const textNode = document.createTextNode("");
+    const cursor = document.createElement("span");
+    cursor.className = "typing-cursor";
+    cursor.setAttribute("aria-hidden", "true");
+    cursor.textContent = "▍";
+    element.append(textNode, cursor);
+
+    let index = 0;
+    let timer = null;
+    const finish = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+      cursor.remove();
+      activeTypingCancels.delete(cancel);
+      resolve();
+    };
+    const cancel = () => finish();
+    activeTypingCancels.add(cancel);
+
+    const typeNextCharacter = () => {
+      if (generation !== typingGeneration || index >= characters.length) {
+        finish();
+        return;
+      }
+      textNode.appendData(characters[index]);
+      index += 1;
+      timer = setTimeout(typeNextCharacter, 15 + Math.random() * 15);
+    };
+
+    typeNextCharacter();
+  });
+}
+
+function cancelTypingAnimations() {
+  typingGeneration += 1;
+  for (const cancel of [...activeTypingCancels]) {
+    cancel();
+  }
+  activeTypingCancels.clear();
+}
+
+async function streamExplanation(body) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let pendingWord = "";
-  let typingQueue = Promise.resolve();
-
-  const queueText = (text) => {
-    pendingWord += text;
-    const words = pendingWord.match(/\S+\s*/g) || [];
-
-    if (/\s$/.test(pendingWord)) {
-      pendingWord = "";
-    } else {
-      pendingWord = words.pop() || pendingWord;
-    }
-
-    if (words.length) {
-      typingQueue = typingQueue.then(async () => {
-        for (const word of words) {
-          answerElement.appendChild(document.createTextNode(word));
-          await new Promise((resolve) => setTimeout(resolve, 18));
-        }
-      });
-    }
-  };
+  let answer = "";
 
   const processEvent = (eventBlock) => {
     const dataLines = [];
@@ -349,9 +592,7 @@ async function streamExplanation(body, answerElement) {
       );
     }
 
-    if (data.text) {
-      queueText(data.text);
-    }
+    answer += data.text || "";
   };
 
   while (true) {
@@ -373,15 +614,7 @@ async function streamExplanation(body, answerElement) {
     }
   }
 
-  if (pendingWord) {
-    const finalWord = pendingWord;
-    pendingWord = "";
-    typingQueue = typingQueue.then(() => {
-      answerElement.appendChild(document.createTextNode(finalWord));
-    });
-  }
-
-  await typingQueue;
+  return answer;
 }
 
 function makeDraggable(element, handle) {

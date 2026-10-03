@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
-  buildFallbackExplanation,
+  EXPLANATION_SCHEMA,
   generateExplanation,
+  getPublicErrorMessage,
   MODELS,
 } from "./server.js";
 
@@ -27,16 +28,36 @@ test("backend uses a supported Gemini model list", () => {
   assert.deepEqual(MODELS, ["gemini-3.8-flash"]);
 });
 
-test("fallback explanation is produced for a selected text", () => {
-  const message = buildFallbackExplanation(
-    "Photosynthesis is the method plants use to turn sunlight into energy.",
-  );
-  assert.match(message, /Photosynthesis/i);
-  assert.ok(message.length > 80);
-  assert.match(message, /main idea|simple/i);
+test("Gemini uses a schema-constrained JSON response", async () => {
+  const expected = {
+    definition: "World means the Earth or all people and places.",
+    examples: ["Earth is one world."],
+    realWorldApplications: [],
+    howItWorks: [],
+    advantages: [],
+    disadvantages: [],
+    deepDive: [],
+  };
+  let request;
+  const client = {
+    models: {
+      async generateContent(options) {
+        request = options;
+        return { text: JSON.stringify(expected) };
+      },
+    },
+  };
+
+  const answer = await generateExplanation("world", client);
+
+  assert.deepEqual(answer, expected);
+  assert.equal(request.config.responseMimeType, "application/json");
+  assert.deepEqual(request.config.responseSchema, EXPLANATION_SCHEMA);
+  assert.match(request.contents, /world/);
+  assert.deepEqual(Object.keys(answer), EXPLANATION_SCHEMA.required);
 });
 
-test("quota exhaustion returns a fallback explanation without retrying", async () => {
+test("quota exhaustion does not produce fabricated fallback content", async () => {
   let calls = 0;
   const client = {
     models: {
@@ -50,11 +71,18 @@ test("quota exhaustion returns a fallback explanation without retrying", async (
     },
   };
 
-  const answer = await generateExplanation(
-    "Plants convert sunlight into energy.",
-    client,
+  await assert.rejects(
+    generateExplanation("Plants convert sunlight into energy.", client),
+    /Quota exceeded/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("quota failures return a clear user-facing message without API details", () => {
+  const message = getPublicErrorMessage(
+    Object.assign(new Error("private provider details"), { status: 429 }),
   );
 
-  assert.match(answer, /Plants convert sunlight into energy/i);
-  assert.equal(calls, 1);
+  assert.match(message, /daily usage limit/i);
+  assert.doesNotMatch(message, /private provider details|API key/i);
 });
