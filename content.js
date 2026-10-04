@@ -4,7 +4,7 @@ let activeRequestController = null;
 let activeTypingCancels = new Set();
 let typingGeneration = 0;
 
-const BACKEND_URL = "http://localhost:3000/api/explain";
+const EXPLANATION_MESSAGE = "explain-selected-text";
 
 function removeAskButton() {
   if (askButton) {
@@ -291,40 +291,22 @@ function createAIWindow(selectedText) {
   const controller = new AbortController();
   activeRequestController = controller;
 
-  fetch(BACKEND_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ selectedText }),
-    signal: controller.signal,
-  })
-    .then(async (response) => {
-      const contentType = response.headers.get("content-type") || "";
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || `Backend error (${response.status}).`);
-      }
-
-      if (contentType.includes("application/json")) {
-        const data = await response.json().catch(() => ({}));
-        if (!data.answer) {
-          throw new Error(
-            data.error || "The backend returned an empty response.",
-          );
-        }
-        showAnswer(shadow, selectedText, data.answer);
+  chrome.runtime
+    .sendMessage({ type: EXPLANATION_MESSAGE, selectedText })
+    .then((result) => {
+      if (controller.signal.aborted) {
         return;
       }
-
-      if (!response.body) {
-        throw new Error("The backend did not provide a readable response.");
+      if (result?.error) {
+        throw new Error(result.error);
       }
-
-      const answerJson = await streamExplanation(response.body);
-      showAnswer(shadow, selectedText, JSON.parse(answerJson));
+      if (!result?.answer) {
+        throw new Error("The backend returned an empty response.");
+      }
+      showAnswer(shadow, selectedText, result.answer);
     })
     .catch((error) => {
-      if (error.name === "AbortError") {
+      if (controller.signal.aborted || error.name === "AbortError") {
         return;
       }
 
@@ -342,7 +324,7 @@ function createAIWindow(selectedText) {
             ? "Select less text and try again."
             : /daily usage limit/i.test(error.message)
               ? error.message
-              : "Please try again in a moment.";
+              : error.message || "Please try again in a moment.";
         }
       }
     })
@@ -392,115 +374,62 @@ function showAnswer(shadow, selectedText, answer) {
 
   const orderedSections = [
     ["definition", "📖 Simple Definition", "text"],
-    ["examples", "💡 Examples", "list"],
-    ["realWorldApplications", "🌍 Real-World Applications", "list"],
+    ["example", "💡 Example", "text"],
+    ["realWorldExample", "🌍 Real-World Example", "text"],
+    ["howItWorks", "⚙️ How It Works", "ordered"],
+    ["applications", "📱 Applications", "list"],
     ["advantages", "⭐ Advantages", "list"],
-    ["disadvantages", "⚠️ Disadvantages", "list"],
-    ["howItWorks", "⚙️ How It Works", "list"],
+    ["limitations", "⚠️ Limitations", "list"],
+    ["deepDive", "🔍 Deep Dive", "text"],
   ];
   const textTargets = [];
 
   for (const [key, title, fieldType] of orderedSections) {
     const value = answer[key];
-    const items =
-      fieldType === "list"
-        ? Array.isArray(value)
-          ? value.filter((item) => typeof item === "string" && item.trim())
-          : []
-        : typeof value === "string" && value.trim()
-          ? [value]
-          : [];
-    if (!items.length) {
-      continue;
-    }
-
-    const section = createAnswerSection(title, items);
+    const listType = fieldType === "list" || fieldType === "ordered";
+    const items = listType
+      ? Array.isArray(value)
+        ? value.filter((item) => typeof item === "string" && item.trim())
+        : []
+      : typeof value === "string" && value.trim()
+        ? [value]
+        : [];
+    const section = createAnswerSection(
+      title,
+      items.length ? items : ["Not applicable to this selection."],
+      items.length ? fieldType : "text",
+    );
     content.appendChild(section.container);
     textTargets.push(...section.textTargets);
   }
-
-  const deepDiveContent = Array.isArray(answer.deepDive)
-    ? answer.deepDive.filter((item) => typeof item === "string" && item.trim())
-    : [];
-  let deepDiveTypingQueued = false;
-  let deepDiveTypingStarted = false;
-  const generation = typingGeneration;
-
-  if (deepDiveContent.length) {
-    const deepDive = document.createElement("section");
-    deepDive.className = "section deep-dive-section";
-
-    const toggle = document.createElement("button");
-    toggle.className = "deep-dive-toggle";
-    toggle.type = "button";
-    toggle.setAttribute("aria-expanded", "false");
-    toggle.textContent = "🔍 Deep Dive";
-    const chevron = document.createElement("span");
-    chevron.className = "deep-dive-chevron";
-    chevron.setAttribute("aria-hidden", "true");
-    chevron.textContent = "⌄";
-    toggle.appendChild(chevron);
-
-    const body = document.createElement("div");
-    body.className = "deep-dive-body";
-    body.setAttribute("aria-hidden", "true");
-    const inner = document.createElement("div");
-    inner.className = "deep-dive-inner";
-    const deepDiveList = document.createElement("ul");
-    deepDiveList.className = "answer-list";
-    const deepDiveTargets = deepDiveContent.map((item) => {
-      const listItem = document.createElement("li");
-      listItem.className = "text answer";
-      listItem.setAttribute("aria-live", "off");
-      deepDiveList.appendChild(listItem);
-      return [listItem, item.trim()];
-    });
-    inner.appendChild(deepDiveList);
-    body.appendChild(inner);
-    deepDive.append(toggle, body);
-    content.appendChild(deepDive);
-
-    toggle.addEventListener("click", () => {
-      const expanded = toggle.getAttribute("aria-expanded") !== "true";
-      toggle.setAttribute("aria-expanded", String(expanded));
-      body.setAttribute("aria-hidden", String(!expanded));
-      deepDive.classList.toggle("is-open", expanded);
-      if (expanded && !deepDiveTypingStarted && !deepDiveTypingQueued) {
-        deepDiveTypingQueued = true;
-        visibleSectionsTyping.then(() => {
-          deepDiveTypingQueued = false;
-          if (
-            typingGeneration === generation &&
-            toggle.getAttribute("aria-expanded") === "true" &&
-            !deepDiveTypingStarted
-          ) {
-            deepDiveTypingStarted = true;
-            animateSections(deepDiveTargets, generation);
-          }
-        });
-      }
-    });
-  }
-
-  const visibleSectionsTyping = animateSections(textTargets, generation);
+  animateSections(textTargets, typingGeneration);
 }
 
-function createAnswerSection(title, items) {
+function createAnswerSection(title, items, fieldType) {
   const container = document.createElement("section");
   container.className = "section answer-section";
   const heading = document.createElement("div");
   heading.className = "section-title";
   heading.textContent = title;
-  const list = document.createElement("ul");
-  list.className = "answer-list";
-  const textTargets = items.map((item) => {
-    const listItem = document.createElement("li");
-    listItem.className = "text answer";
-    listItem.setAttribute("aria-live", "off");
-    list.appendChild(listItem);
-    return [listItem, item.trim()];
-  });
-  container.append(heading, list);
+  let textTargets;
+  if (fieldType === "text") {
+    const paragraph = document.createElement("p");
+    paragraph.className = "text answer";
+    paragraph.setAttribute("aria-live", "off");
+    container.append(heading, paragraph);
+    textTargets = [[paragraph, items[0].trim()]];
+  } else {
+    const list = document.createElement(fieldType === "ordered" ? "ol" : "ul");
+    list.className = "answer-list";
+    textTargets = items.map((item) => {
+      const listItem = document.createElement("li");
+      listItem.className = "text answer";
+      listItem.setAttribute("aria-live", "off");
+      list.appendChild(listItem);
+      return [listItem, item.trim()];
+    });
+    container.append(heading, list);
+  }
   return { container, textTargets };
 }
 
